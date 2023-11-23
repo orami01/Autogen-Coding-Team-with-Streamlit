@@ -1,117 +1,72 @@
-import streamlit as st
-import subprocess
-import os
+import sys
 import json
-import threading  # Importing the threading module
-import queue  # Importing the queue module
-# Assuming run_query is imported correctly
-from query_solver import run_query
+import autogen
+import os
+from autogen import config_list_from_json
 
+# Function to run the query
+def run_query(programming_problem, api_key):
+    config_list = [
+        {
+            'model': 'codellama/CodeLlama-34b-Instruct-hf',
+            'api_key': api_key,
+            'api_base': api_base,
+        },
+        {
+            'model': 'meta-llama/Llama-2-70b-chat-hf',
+            'api_key': api_key,
+            'api_base': api_base,
+        },
+        {
+            'model': 'bigcode/starcoder',
+            'api_key': api_key,
+            'api_base': api_base,
+        },
+    ]
+    
+    pm_llm_config = {"config_list": config_list, "seed": 42, "request_timeout": 120,"llm": "meta-llama/Llama-2-70b-chat-hf"}
 
-st.title('AutoGen OpenSource Multi-Agent Python Programming Team')
-st.markdown('''The CodeCrafters Team roles:
-            -> 1. CodeLlama: The Coding Virtuoso. Role: Lead Developer 
-            -> 2. Starcoder: The Assistant Maestro. Role: Assistant Developer
-            -> 3. Llama 2: The Versatile Visionary. Role: Project Manager and Generalist ''')
+    llm_config = {"config_list": config_list, "seed": 42, "request_timeout": 120,"llm": "codellama/CodeLlama-34b-Instruct-hf"}
+    
+    code_llm_config = {"config_list": config_list, "seed": 42, "request_timeout": 120,"llm": "bigcode/starcoder"}
+    
+    autogen.ChatCompletion.start_logging()
 
-# Retrieve the API key from environment variables
-api_key = os.getenv("OPENAI_API_KEY")
-api_base = "https://api.deepinfra.com/v1/openai"
-
-# Function to handle streaming of subprocess output
-def stream_subprocess_output(input_data, placeholder):
-    process = subprocess.Popen(
-        ["python", "query_solver.py"],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True
+    # Create user proxy agent, coder, product manager
+    user_proxy = autogen.UserProxyAgent(
+        name="User_proxy",
+        system_message="A human admin who will give the idea and run the code provided by Coder.",
+        code_execution_config={"last_n_messages": 2, "work_dir": "groupchat"},
+        human_input_mode="NEVER",
+    )
+    coder = autogen.AssistantAgent(
+        name="Coder",
+        llm_config=llm_config,
+    )
+    code_assistant = autogen.AssistantAgent(
+        name="Code_assistant",
+        system_message="You will analyze code, test the code, and provide recomendations",
+        llm_config=code_llm_config,
+    )
+    pm = autogen.AssistantAgent(
+        name="product_manager",
+        system_message="You will help break down the initial idea into a well scoped requirement for the coder; Do not involve in future conversations or error fixing",
+        llm_config=pm_llm_config,
     )
 
-    # Send input data to the subprocess
-    process.stdin.write(json.dumps(input_data))
-    process.stdin.close()
-
-    # Initialize a variable to store the final result
-    final_result = ""
-
-    # Read the output of the subprocess and update the placeholder
-    for line in iter(process.stdout.readline, ''):
-        placeholder.write(line)
-        final_result += line
-
-    process.stdout.close()
-    return final_result.strip()
-    
-# Initialize session state for storing problems and results
-if 'problem_history' not in st.session_state:
-    st.session_state['problem_history'] = []
-if 'result_history' not in st.session_state:
-    st.session_state['result_history'] = []
-
-programming_problem = st.text_area("Enter your programming task:", "Write a program that calculates the number of a Hebrew word using the gematria, and write a test for  יהוה which should be 26", height=100)
-
-# Define file paths
-CHAT_HISTORY_PATH = "chat_history.txt"
-
-def save_chat_history(problem, result):
-    with open(CHAT_HISTORY_PATH, "a") as file:
-        file.write(f"Problem: {problem}\nResult: {result}\n\n")
-
-def load_chat_history():
-    if os.path.exists(CHAT_HISTORY_PATH):
-        with open(CHAT_HISTORY_PATH, "r") as file:
-            return file.read()
-    else:
-        return "No chat history found."
+    # Create groupchat
+    groupchat = autogen.GroupChat(
+        agents=[user_proxy, coder, code_assistant, pm], messages=[])
+    manager = autogen.GroupChatManager(groupchat=groupchat, llm_config=llm_config)
 
 
-
-# Use session state to store and retrieve the programming problem
-if 'programming_problem' not in st.session_state:
-    st.session_state['programming_problem'] = "Write a program that calculates the number of a Hebrew word using the gematria, and write a test for יהוה which should be 26"
+    return user_proxy.initiate_chat(manager, message=programming_problem)
 
 
-if st.button('Solve'):
-    if api_key and programming_problem:
-        input_data = {
-            "programming_problem": programming_problem,
-            "api_key": api_key
-        }
-
-        # Create a placeholder for live streaming output
-        stream_placeholder = st.empty()
-
-        # Start a thread to handle the streaming of subprocess output
-        streaming_thread = threading.Thread(
-            target=stream_subprocess_output, 
-            args=(input_data, stream_placeholder),
-            daemon=True
-        )
-        streaming_thread.start()
-        
-        #streaming_thread.join()  # Wait for the thread to finish
-
-        # Retrieve the final output from the thread
-        final_result = stream_subprocess_output(input_data, stream_placeholder)
-        
-        # Save to chat history
-        save_chat_history(programming_problem, final_result)
-        st.session_state['result_history'].append(final_result)
-        st.session_state['problem_history'].append(programming_problem)
-        st.write(final_result)
-
-    else:
-        st.write("Please provide both Open API key and programming problem.")
-
-# Display previous problems and results
-#with st.expander("View Previous Problems and Results"):
-#    for problem, result in zip(st.session_state['problem_history'], st.session_state['result_history']):
-#        st.write(f"Problem: {problem}")
-#        st.write(f"Result: {result}")
-#        st.markdown("---")
-        
-# Display chat history
-with st.expander("View Chat History"):
-    chat_history = load_chat_history()
-    st.text_area("Chat History", chat_history, height=300)
+if __name__ == "__main__":
+    input_data = json.loads(sys.stdin.read())
+    programming_problem = input_data['programming_problem']
+    api_key = os.getenv("OPENAI_API_KEY")
+    api_base = "https://api.deepinfra.com/v1/openai"
+    result = run_query(programming_problem, api_key)
+    print(result)
